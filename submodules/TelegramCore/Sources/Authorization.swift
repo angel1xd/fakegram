@@ -1091,6 +1091,7 @@ public func authorizeWithCode(accountManager: AccountManager<TelegramAccountMana
             }
             |> castError(AuthorizationCodeVerificationError.self)
         }
+        |> castError(AuthorizationCodeVerificationError.self)
         |> switchToLatest
     }
     return account.postbox.transaction { transaction -> Signal<AuthorizeWithCodeResult, AuthorizationCodeVerificationError> in

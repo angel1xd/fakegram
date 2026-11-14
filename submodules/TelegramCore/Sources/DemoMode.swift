@@ -463,7 +463,7 @@ public func demoSeedPostbox(transaction: Transaction, mediaBox: MediaBox, accoun
         let _ = transaction.addMessages(storeMessages, location: .Random)
 
         // The dialog must not wait for the server to fill history that is already here.
-        transaction.removeHole(peerId: chat.peerId, threadId: nil, namespace: Namespaces.Message.Cloud, space: .everywhere, range: 1 ...(Int32.max - 1))
+        transaction.removeHole(peerId: chat.peerId, threadId: nil, namespace: Namespaces.Message.Cloud, space: .everywhere, range: 1 ... (Int32.max - 1))
 
         transaction.applyIncomingReadMaxId(MessageId(peerId: chat.peerId, namespace: Namespaces.Message.Cloud, id: chat.incomingReadId))
         if let outgoingReadId = chat.outgoingReadId, let timestamp = timestamps[outgoingReadId] {
@@ -1320,7 +1320,7 @@ public func demoChangeStarGiftMessage(transaction: Transaction, reference: StarG
             // Converting pays the gift's conversion value out once, not on every later reload.
             DemoMode.addStars(convertStars ?? 0)
         }
-    case let .starGiftUnique(gift, isUpgrade, isTransferred, savedToProfile, canExportDate, transferStars, isRefunded, isPrepaidUpgrade, peerId, senderId, savedId, resaleAmount, canTransferDate, canResaleDate, dropOriginalDetailsStars, assigned, fromOffer, canCraftAt, isCrafted, text, entities, nameHidden):
+    case let .starGiftUnique(gift, isUpgrade, isTransferred, _, canExportDate, transferStars, isRefunded, isPrepaidUpgrade, peerId, senderId, savedId, resaleAmount, canTransferDate, canResaleDate, dropOriginalDetailsStars, assigned, fromOffer, canCraftAt, isCrafted, text, entities, nameHidden):
         // A unique gift cannot be converted, and deleting one is handled above.
         guard case let .savedToProfile(added) = change else {
             return false
@@ -1607,7 +1607,7 @@ public func demoEnqueueMessages(account: Account, peerId: PeerId, messages: [Enq
                 if let storedTimestamp = storedTimestamps[messageId.id] {
                     // The chat's own read index moves with the sent message, so the new bubble
                     // settles into the same read state as the seeded ones.
-                    transaction.applyOutgoingReadMaxIndex(MessageIndex(id: messageId, timestamp: storedTimestamp))
+                    let _ = transaction.applyOutgoingReadMaxIndex(MessageIndex(id: messageId, timestamp: storedTimestamp))
                 }
             }
         }
@@ -1666,7 +1666,7 @@ public func demoEnqueueGift(account: Account, peerId: PeerId, action: TelegramMe
         )
 
         let _ = transaction.addMessages([storeMessage], location: .UpperHistoryBlock)
-        transaction.applyOutgoingReadMaxIndex(MessageIndex(id: messageId, timestamp: timestamp))
+        let _ = transaction.applyOutgoingReadMaxIndex(MessageIndex(id: messageId, timestamp: timestamp))
         return messageId
     }
 }

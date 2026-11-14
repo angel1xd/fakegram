@@ -123,6 +123,32 @@ jobs:
             --buildNumber=1 \
             --continueOnError 2>&1 | tee build.log
 
+      - name: Publish build diagnostics to job summary
+        if: always()
+        run: |
+          {
+            echo "## Build step diagnostics"
+            echo
+            echo '### Disk after build'
+            echo '```'
+            df -h /System/Volumes/Data || df -h /
+            echo '```'
+            if [ -f build.log ]; then
+              echo "build.log size: $(wc -c < build.log) bytes"
+              echo
+              echo '### Failure signatures (error:/ERROR:/FAILED:/ENOSPC/Traceback), last 60'
+              echo '```'
+              grep -nE "error:|ERROR:|FAILED:|No space left|ENOSPC|Traceback|fatal error" build.log | tail -60 || echo "(no matches)"
+              echo '```'
+              echo '### Tail of build.log (last 80 lines)'
+              echo '```'
+              tail -80 build.log
+              echo '```'
+            else
+              echo "build.log was not created (failure before the Build step)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
