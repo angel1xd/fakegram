@@ -1,0 +1,215 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Every Swift file touched by the demo/faker changes.
+      SWIFT_FILES: >-
+        submodules/TelegramCore/Sources/DemoMode.swift
+        submodules/TelegramCore/Sources/Authorization.swift
+        submodules/TelegramCore/Sources/PendingMessages/EnqueueMessage.swift
+        submodules/TelegramCore/Sources/Account/Account.swift
+        submodules/TelegramCore/Sources/TelegramEngine/Payments/Stars.swift
+        submodules/TelegramCore/Sources/TelegramEngine/Payments/StarGiftsCollections.swift
+        submodules/TelegramCore/Sources/TelegramEngine/Payments/StarGifts.swift
+        submodules/TelegramCore/Sources/TelegramEngine/Payments/GiftCodes.swift
+        submodules/TelegramCore/Sources/TelegramEngine/Payments/BotPaymentForm.swift
+        submodules/TextFormat/Sources/ChatTextInputAttributes.swift
+        submodules/InAppPurchaseManager/Sources/InAppPurchaseManager.swift
+        submodules/AttachmentTextInputPanelNode/Sources/AttachmentTextInputPanelNode.swift
+        submodules/TelegramUI/Sources/SharedWakeupManager.swift
+        submodules/TelegramUI/Sources/SharedAccountContext.swift
+        submodules/TelegramUI/Sources/ApplicationContext.swift
+        submodules/TelegramUI/Sources/AppDelegate.swift
+        submodules/TelegramUI/Components/Gifts/GiftSetupScreen/Sources/GiftSetupScreen.swift
+        submodules/TelegramUI/Components/Gifts/GiftViewScreen/Sources/GiftViewScreen.swift
+        submodules/TelegramUI/Components/Chat/ChatTextInputPanelNode/Sources/ChatTextInputPanelNode.swift
+        submodules/TelegramUI/Components/Stars/StarsPurchaseScreen/Sources/StarsPurchaseScreen.swift
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Postbox import check
+        run: python3 build-system/Make/PostboxImportCheck.py
+
+      - name: Bracket balance
+        run: python3 tools/balance_check.py $SWIFT_FILES
+
+      - name: Paren depth
+        run: python3 tools/paren_depth.py $SWIFT_FILES
+
+      - name: Star-gift arity
+        run: |
+          python3 tools/arity_check.py \
+            submodules/TelegramCore/Sources/DemoMode.swift \
+            submodules/TelegramCore/Sources/TelegramEngine/Payments/StarGifts.swift
+
+      - name: Checker self-test
+        run: python3 tools/test_checkers.py
+
+      - name: Make.py compiles
+        run: python3 -m py_compile build-system/Make/Make.py
+
+  build:
+    needs: static-checks
+    runs-on: xcode-27
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch submodules
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1 || git submodule update --init --recursive
+
+      - name: Show environment
+        run: |
+          echo "== disk before cleanup"
+          df -h /System/Volumes/Data || df -h /
+          xcodebuild -version
+          sysctl -n hw.ncpu hw.memsize
+          python3 --version
+          xcrun simctl list runtimes || true
+
+      - name: Free disk space
+        run: |
+          set -x
+          # Keep only the selected Xcode, delete every other install.
+          ACTIVE_XCODE=$(xcode-select -p | sed -E 's#(/Applications/Xcode[^/]*\.app)/.*#\1#')
+          echo "Keeping $ACTIVE_XCODE"
+          for app in /Applications/Xcode*.app; do
+            if [ "$app" != "$ACTIVE_XCODE" ]; then
+              sudo rm -rf "$app" || true
+            fi
+          done
+          # Non-iOS simulator runtimes only; the iOS runtime is needed to boot a phone.
+          for rt in /Library/Developer/CoreSimulator/Profiles/Runtimes/*.runtime; do
+            if [ -e "$rt" ]; then
+              case "$(basename "$rt")" in
+                iOS*) ;;
+                *) sudo rm -rf "$rt" || true ;;
+              esac
+            fi
+          done
+          # Toolchains this build never touches.
+          sudo rm -rf /Users/runner/Library/Android || true
+          sudo rm -rf /Users/runner/.dotnet /usr/local/share/dotnet || true
+          sudo rm -rf /Users/runner/hostedtoolcache || true
+          sudo rm -rf /Users/runner/Library/Caches/Homebrew || true
+          rm -rf /Users/runner/Library/Developer/Xcode/DerivedData/* || true
+          echo "== disk after cleanup"
+          df -h /System/Volumes/Data || df -h /
+
+      - name: Build
+        run: |
+          set -o pipefail
+          python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
+          python3 -u build-system/Make/Make.py --overrideXcodeVersion build \
+            --configurationPath=build-system/appstore-configuration.json \
+            --codesigningInformationPath=build-system/fake-codesigning \
+            --configuration=debug_sim_arm64 \
+            --buildNumber=1 \
+            --continueOnError 2>&1 | tee build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: Install into simulator and capture demo screens
+        run: |
+          echo "== disk after build"
+          df -h /System/Volumes/Data || true
+
+          echo "== locate build product"
+          IPA=$(find -L bazel-out -maxdepth 7 -name 'Telegram.ipa' 2>/dev/null | head -1 || true)
+          APP=$(find -L bazel-out -maxdepth 7 -type d -name 'Telegram.app' 2>/dev/null | head -1 || true)
+          echo "IPA='$IPA'"
+          echo "APP='$APP'"
+          if [ -z "$IPA" ] && [ -z "$APP" ]; then
+            echo "No Telegram.app / Telegram.ipa produced by the build"
+            exit 1
+          fi
+
+          echo "== pick an iPhone simulator"
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          phones = []
+          for runtime, devices in data.items():
+              if "iOS" not in runtime:
+                  continue
+              for d in devices:
+                  if d.get("isAvailable") and d["name"].startswith("iPhone"):
+                      phones.append(d)
+          for name in ("iPhone 18 Pro", "iPhone 17 Pro", "iPhone 18", "iPhone 17"):
+              for d in phones:
+                  if d["name"] == name:
+                      print(d["udid"])
+                      sys.exit(0)
+          if phones:
+              print(phones[0]["udid"])
+              sys.exit(0)
+          sys.exit("no iPhone simulator available")
+          ')
+          echo "Using simulator $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+
+          OUT="$GITHUB_WORKSPACE/ci-output"
+          mkdir -p "$OUT"
+
+          if [ -n "$IPA" ]; then
+            TMP=$(mktemp -d)
+            unzip -q "$IPA" -d "$TMP"
+            xcrun simctl install "$UDID" "$TMP"/Payload/*.app
+          else
+            xcrun simctl install "$UDID" "$APP"
+          fi
+
+          # Screen 1: demo auto-login lands on the chat list.
+          xcrun simctl launch "$UDID" ph.telegra.Telegraph -demoAutoLogin
+          sleep 30
+          xcrun simctl io "$UDID" screenshot "$OUT/01-chat-list.png"
+          xcrun simctl terminate "$UDID" ph.telegra.Telegraph || true
+
+          # Screen 2: relaunch and open Anna's chat (peerId 1001), recorded on video.
+          xcrun simctl io "$UDID" recordVideo --codec=h264 --force "$OUT/02-open-chat.mp4" > "$OUT/rec.log" 2>&1 &
+          REC=$!
+          for _ in $(seq 1 100); do
+            if grep -q "Recording started" "$OUT/rec.log" 2>/dev/null; then
+              break
+            fi
+            sleep 0.1
+          done
+          xcrun simctl launch "$UDID" ph.telegra.Telegraph -demoOpenChat 1001
+          sleep 35
+          kill -INT "$REC" || true
+          wait "$REC" || true
+          sleep 2
+          xcrun simctl io "$UDID" screenshot "$OUT/02-open-chat.png"
+
+          ls -la "$OUT"
+
+      - name: Upload screenshots and video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-screenshots
+          path: ci-output/
+          if-no-files-found: ignore
