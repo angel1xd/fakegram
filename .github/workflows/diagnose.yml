@@ -1,0 +1,51 @@
+# Pulls the build.log artifact of a failed CI run and republishes its unique
+# compile errors as annotations and a check-run summary, both readable through
+# GitHub's REST API without signing in. Run #2 is fetched because its artifact
+# was produced before this workflow existed.
+name: Diagnose previous build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/diagnose.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: "43588375250"
+      CHECK_NAME: diagnose
+      BUILD_LOG: build.log
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the build-log artifact
+        run: |
+          set -euo pipefail
+          API="https://api.github.com/repos/$GITHUB_REPOSITORY"
+          ART_ID=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+            "$API/actions/runs/$RUN_ID/artifacts" \
+            | python3 -c 'import json,sys; a=json.load(sys.stdin).get("artifacts", []); print(a[0]["id"] if a else "")')
+          if [ -z "$ART_ID" ]; then
+            echo "No artifact on run $RUN_ID"
+            exit 1
+          fi
+          echo "artifact id: $ART_ID"
+          curl -sfL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$API/actions/artifacts/$ART_ID/zip" -o build-log.zip
+          unzip -o -q build-log.zip
+          ls -la
+          wc -c build.log
+
+      - name: Publish diagnostics
+        run: python3 .github/scripts/publish_build_errors.py

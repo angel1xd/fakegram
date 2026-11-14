@@ -125,7 +125,15 @@ jobs:
 
       - name: Publish build diagnostics to job summary
         if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          CHECK_NAME: build
+          BUILD_LOG: build.log
         run: |
+          # Errors become annotations + a check-run summary, both readable
+          # through the REST API without signing in to GitHub.
+          python3 .github/scripts/publish_build_errors.py || true
           {
             echo "## Build step diagnostics"
             echo
