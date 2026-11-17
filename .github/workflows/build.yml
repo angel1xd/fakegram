@@ -121,7 +121,8 @@ jobs:
             --codesigningInformationPath=build-system/fake-codesigning \
             --configuration=debug_sim_arm64 \
             --buildNumber=1 \
-            --continueOnError 2>&1 | tee build.log
+            --continueOnError \
+            --disableProvisioningProfiles 2>&1 | tee build.log
 
       - name: Publish build diagnostics to job summary
         if: always()
